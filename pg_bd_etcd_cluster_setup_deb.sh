@@ -324,7 +324,7 @@ show_post_install_info() {
     echo ""
     
     if [[ $NODE_NUMBER -eq 1 ]]; then
-        log_warn "NEXT STEPS (NODE 1 / bootstrap):"
+        log_warn "NEXT STEPS (NODE 1 - bootstrap):"
         echo ""
         echo "1) On NODE 2 (${NODE2_NAME} - ${NODE2_IP}) run this script and configure the node"
         echo "   sudo ${0}  # run the same installer on NODE 2"
@@ -340,7 +340,7 @@ show_post_install_info() {
         echo "  # On NODE 2:"
         echo "  sudo systemctl start etcd.service"
         echo "  sudo systemctl status etcd.service"
-        echo "  sleep 10"
+        echo ""
         echo "  # On NODE 3:"
         echo "  sudo systemctl start etcd.service"
         echo "  sudo systemctl status etcd.service"
