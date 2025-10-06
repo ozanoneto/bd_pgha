@@ -2,9 +2,11 @@
 
 #***********************************************************#
 #                                                           #
-#  Nome: azure_nlb_patroni_setup.sh                         #
+#  Nome: azure_lb_patroni_setup.sh                          #
 #  Autor: Ozano Neto                                        #
-#  Descricao: Setup Azure Load Balancer for Patroni HA      #
+#  Descricao: Setup Azure Load Balancer for Patroni HA     #
+#              with separate Write (PRIMARY) and Read       #
+#              (REPLICAS) load balancers                    #
 #  Requires: Azure CLI installed and authenticated          #
 #                                                           #
 #  BDADOS TECNOLOGIA LTDA                                   #
@@ -19,21 +21,28 @@ set -e
 #============================================================
 
 # Azure Resource Configuration
-RESOURCE_GROUP="RG_VM_LINUX"
+RESOURCE_GROUP="rg-postgresql-ha"
 LOCATION="eastus"
 
-# Load Balancer Configuration
-LB_NAME="nlb-postgresql-ha"
-LB_FRONTEND_IP="nlb-frontend-postgresql"
-LB_BACKEND_POOL="nlb-backend-postgresql"
-LB_PROBE_NAME="health-pg-patroni"
-LB_RULE_NAME="nlb-rule-postgresql"
+# Load Balancer Configuration - WRITE (Primary)
+LB_NAME_WRITE="lb-postgresql-write"
+LB_FRONTEND_IP_WRITE="lb-frontend-postgresql-write"
+LB_BACKEND_POOL="lb-backend-postgresql"
+LB_PROBE_NAME_PRIMARY="health-probe-patroni-primary"
+LB_RULE_NAME_WRITE="lb-rule-postgresql-write"
+
+# Load Balancer Configuration - READ (Replicas)
+LB_NAME_READ="lb-postgresql-read"
+LB_FRONTEND_IP_READ="lb-frontend-postgresql-read"
+LB_PROBE_NAME_REPLICA="health-probe-patroni-replica"
+LB_RULE_NAME_READ="lb-rule-postgresql-read"
 
 # Network Configuration
-VNET_NAME="vnet-pgha-cluster"
-SUBNET_NAME="default"
-LB_PRIVATE_IP="10.1.0.10"
-NSG_NAME="nsg-pgha-cluster"
+VNET_NAME="vnet-postgresql-ha"
+SUBNET_NAME="subnet-postgresql-backend"
+LB_PRIVATE_IP_WRITE="10.0.0.10"
+LB_PRIVATE_IP_READ="10.0.0.11"
+NSG_NAME="nsg-postgresql-nodes"
 
 # PostgreSQL Nodes
 NODE1_NAME="lx-pgnode-01"
@@ -41,11 +50,14 @@ NODE2_NAME="lx-pgnode-02"
 NODE3_NAME="lx-pgnode-03"
 
 # Ports
-POSTGRES_PORT="55018"
+POSTGRES_PORT="5432"
 PATRONI_API_PORT="8008"
 
 # Load Balancer Type: "internal" or "public"
 LB_TYPE="internal"
+
+# Setup Mode: "write-only", "read-only", or "both"
+SETUP_MODE="both"
 
 #============================================================
 # HELPER FUNCTIONS
@@ -86,23 +98,33 @@ log_success() {
 usage() {
     log_step "AZURE LOAD BALANCER SETUP FOR PATRONI HA"
     echo ""
+    echo "This script creates TWO load balancers:"
+    echo "  1. WRITE Load Balancer - Routes traffic to PRIMARY node only"
+    echo "  2. READ Load Balancer  - Routes traffic to REPLICA nodes only"
+    echo ""
     echo "Usage: $0 [OPTIONS]"
     echo ""
     echo "Options:"
     echo "  -g, --resource-group    Resource group name (default: $RESOURCE_GROUP)"
     echo "  -l, --location          Azure location (default: $LOCATION)"
-    echo "  -n, --lb-name           Load balancer name (default: $LB_NAME)"
     echo "  -v, --vnet-name         Virtual network name (default: $VNET_NAME)"
     echo "  -s, --subnet-name       Subnet name (default: $SUBNET_NAME)"
-    echo "  -i, --lb-ip             Load balancer private IP (default: $LB_PRIVATE_IP)"
+    echo "  -w, --write-ip          Write LB private IP (default: $LB_PRIVATE_IP_WRITE)"
+    echo "  -r, --read-ip           Read LB private IP (default: $LB_PRIVATE_IP_READ)"
     echo "  -t, --lb-type           Load balancer type: internal|public (default: $LB_TYPE)"
+    echo "  -m, --mode              Setup mode: write-only|read-only|both (default: $SETUP_MODE)"
     echo "  -1, --node1-name        Node 1 VM name (default: $NODE1_NAME)"
     echo "  -2, --node2-name        Node 2 VM name (default: $NODE2_NAME)"
     echo "  -3, --node3-name        Node 3 VM name (default: $NODE3_NAME)"
     echo "  -h, --help              Show this help message"
     echo ""
+    echo "Setup Modes:"
+    echo "  ${CYAN}write-only${NC} - Only create write load balancer (PRIMARY)"
+    echo "  ${CYAN}read-only${NC}  - Only create read load balancer (REPLICAS)"
+    echo "  ${CYAN}both${NC}       - Create both write and read load balancers (recommended)"
+    echo ""
     echo "Example:"
-    echo "  ${GREEN}$0 -g rg-postgresql-ha -l eastus -t internal${NC}"
+    echo "  ${GREEN}$0 -g rg-postgresql-ha -l eastus -t internal -m both${NC}"
     echo ""
 }
 
@@ -203,12 +225,25 @@ show_configuration() {
     echo "  Resource Group: ${YELLOW}$RESOURCE_GROUP${NC}"
     echo "  Location: ${YELLOW}$LOCATION${NC}"
     echo "  Load Balancer Type: ${YELLOW}$LB_TYPE${NC}"
+    echo "  Setup Mode: ${YELLOW}$SETUP_MODE${NC}"
     echo ""
-    echo "  Load Balancer Name: ${CYAN}$LB_NAME${NC}"
-    echo "  Frontend IP Name: ${CYAN}$LB_FRONTEND_IP${NC}"
-    echo "  Backend Pool: ${CYAN}$LB_BACKEND_POOL${NC}"
-    echo "  Private IP: ${CYAN}$LB_PRIVATE_IP${NC}"
-    echo ""
+    
+    if [[ "$SETUP_MODE" == "write-only" ]] || [[ "$SETUP_MODE" == "both" ]]; then
+        echo "  ${CYAN}WRITE Load Balancer (PRIMARY only):${NC}"
+        echo "    Name: $LB_NAME_WRITE"
+        echo "    IP: $LB_PRIVATE_IP_WRITE"
+        echo "    Health Check: /primary (port $PATRONI_API_PORT)"
+        echo ""
+    fi
+    
+    if [[ "$SETUP_MODE" == "read-only" ]] || [[ "$SETUP_MODE" == "both" ]]; then
+        echo "  ${CYAN}READ Load Balancer (REPLICAs only):${NC}"
+        echo "    Name: $LB_NAME_READ"
+        echo "    IP: $LB_PRIVATE_IP_READ"
+        echo "    Health Check: /replica (port $PATRONI_API_PORT)"
+        echo ""
+    fi
+    
     echo "  Virtual Network: ${CYAN}$VNET_NAME${NC}"
     echo "  Subnet: ${CYAN}$SUBNET_NAME${NC}"
     echo ""
@@ -217,8 +252,8 @@ show_configuration() {
     echo "    - $NODE2_NAME"
     echo "    - $NODE3_NAME"
     echo ""
-    echo "  Health Probe: Port $PATRONI_API_PORT (Patroni REST API)"
     echo "  PostgreSQL Port: $POSTGRES_PORT"
+    echo "  Patroni API Port: $PATRONI_API_PORT"
     echo ""
     read -p "Continue with setup? (yes/no): " confirm
     if [[ "$confirm" != "yes" ]]; then
@@ -229,14 +264,19 @@ show_configuration() {
 
 # Create Load Balancer
 create_load_balancer() {
-    log_step "Creating Load Balancer"
+    local lb_name="$1"
+    local lb_frontend="$2"
+    local lb_ip="$3"
+    local lb_purpose="$4"
     
-    if az network lb show --resource-group $RESOURCE_GROUP --name $LB_NAME &> /dev/null; then
-        log_warn "Load balancer '$LB_NAME' already exists"
+    log_step "Creating $lb_purpose Load Balancer"
+    
+    if az network lb show --resource-group $RESOURCE_GROUP --name $lb_name &> /dev/null; then
+        log_warn "Load balancer '$lb_name' already exists"
         read -p "Delete and recreate? (yes/no): " recreate
         if [[ "$recreate" == "yes" ]]; then
             log_info "Deleting existing load balancer..."
-            az network lb delete --resource-group $RESOURCE_GROUP --name $LB_NAME
+            az network lb delete --resource-group $RESOURCE_GROUP --name $lb_name
             log_info "Deleted existing load balancer"
         else
             log_info "Using existing load balancer"
@@ -249,22 +289,22 @@ create_load_balancer() {
         
         az network lb create \
           --resource-group $RESOURCE_GROUP \
-          --name $LB_NAME \
+          --name $lb_name \
           --sku Standard \
           --vnet-name $VNET_NAME \
           --subnet $SUBNET_NAME \
-          --frontend-ip-name $LB_FRONTEND_IP \
+          --frontend-ip-name $lb_frontend \
           --backend-pool-name $LB_BACKEND_POOL \
-          --private-ip-address $LB_PRIVATE_IP
+          --private-ip-address $lb_ip
         
-        log_success "Internal load balancer created: $LB_NAME ($LB_PRIVATE_IP)"
+        log_success "$lb_purpose load balancer created: $lb_name ($lb_ip)"
         
     elif [[ "$LB_TYPE" == "public" ]]; then
         log_info "Creating public IP address..."
         
         az network public-ip create \
           --resource-group $RESOURCE_GROUP \
-          --name pip-$LB_NAME \
+          --name pip-$lb_name \
           --sku Standard \
           --allocation-method Static \
           --location $LOCATION
@@ -273,72 +313,154 @@ create_load_balancer() {
         
         az network lb create \
           --resource-group $RESOURCE_GROUP \
-          --name $LB_NAME \
+          --name $lb_name \
           --sku Standard \
-          --public-ip-address pip-$LB_NAME \
-          --frontend-ip-name $LB_FRONTEND_IP \
+          --public-ip-address pip-$lb_name \
+          --frontend-ip-name $lb_frontend \
           --backend-pool-name $LB_BACKEND_POOL
         
         local public_ip=$(az network public-ip show \
           --resource-group $RESOURCE_GROUP \
-          --name pip-$LB_NAME \
+          --name pip-$lb_name \
           --query ipAddress -o tsv)
         
-        log_success "Public load balancer created: $LB_NAME ($public_ip)"
+        log_success "$lb_purpose load balancer created: $lb_name ($public_ip)"
     fi
+}
+
+# Create Write Load Balancer
+create_write_load_balancer() {
+    if [[ "$SETUP_MODE" == "read-only" ]]; then
+        log_info "Skipping write load balancer (mode: $SETUP_MODE)"
+        return 0
+    fi
+    
+    create_load_balancer "$LB_NAME_WRITE" "$LB_FRONTEND_IP_WRITE" "$LB_PRIVATE_IP_WRITE" "WRITE (PRIMARY)"
+}
+
+# Create Read Load Balancer
+create_read_load_balancer() {
+    if [[ "$SETUP_MODE" == "write-only" ]]; then
+        log_info "Skipping read load balancer (mode: $SETUP_MODE)"
+        return 0
+    fi
+    
+    create_load_balancer "$LB_NAME_READ" "$LB_FRONTEND_IP_READ" "$LB_PRIVATE_IP_READ" "READ (REPLICAS)"
 }
 
 # Create Health Probe
 create_health_probe() {
-    log_step "Creating Health Probe"
+    local lb_name="$1"
+    local probe_name="$2"
+    local probe_path="$3"
+    local probe_purpose="$4"
+    
+    log_step "Creating Health Probe for $probe_purpose"
     
     log_info "Creating HTTP health probe on port $PATRONI_API_PORT..."
-    log_info "Endpoint: /primary (only returns 200 for PRIMARY node)"
+    log_info "Endpoint: $probe_path (only returns 200 for $probe_purpose)"
     
     az network lb probe create \
       --resource-group $RESOURCE_GROUP \
-      --lb-name $LB_NAME \
-      --name $LB_PROBE_NAME \
+      --lb-name $lb_name \
+      --name $probe_name \
       --protocol http \
       --port $PATRONI_API_PORT \
-      --path "/primary" \
+      --path "$probe_path" \
       --interval 5 \
       --threshold 2
     
-    log_success "Health probe created: $LB_PROBE_NAME"
+    log_success "Health probe created: $probe_name"
     log_info "  Protocol: HTTP"
     log_info "  Port: $PATRONI_API_PORT"
-    log_info "  Path: /primary"
+    log_info "  Path: $probe_path"
     log_info "  Interval: 5 seconds"
     log_info "  Threshold: 2 failures"
 }
 
+# Create Write Health Probe
+create_write_health_probe() {
+    if [[ "$SETUP_MODE" == "read-only" ]]; then
+        return 0
+    fi
+    
+    create_health_probe "$LB_NAME_WRITE" "$LB_PROBE_NAME_PRIMARY" "/primary" "PRIMARY NODE"
+}
+
+# Create Read Health Probe
+create_read_health_probe() {
+    if [[ "$SETUP_MODE" == "write-only" ]]; then
+        return 0
+    fi
+    
+    create_health_probe "$LB_NAME_READ" "$LB_PROBE_NAME_REPLICA" "/replica" "REPLICA NODES"
+}
+
 # Create Load Balancing Rule
 create_load_balancing_rule() {
-    log_step "Creating Load Balancing Rule"
+    local lb_name="$1"
+    local rule_name="$2"
+    local frontend_ip="$3"
+    local probe_name="$4"
+    local lb_purpose="$5"
+    local distribution="${6:-Default}"
+    
+    log_step "Creating Load Balancing Rule for $lb_purpose"
     
     log_info "Creating rule for PostgreSQL port $POSTGRES_PORT..."
     
     az network lb rule create \
       --resource-group $RESOURCE_GROUP \
-      --lb-name $LB_NAME \
-      --name $LB_RULE_NAME \
+      --lb-name $lb_name \
+      --name $rule_name \
       --protocol tcp \
       --frontend-port $POSTGRES_PORT \
       --backend-port $POSTGRES_PORT \
-      --frontend-ip-name $LB_FRONTEND_IP \
+      --frontend-ip-name $frontend_ip \
       --backend-pool-name $LB_BACKEND_POOL \
-      --probe-name $LB_PROBE_NAME \
+      --probe-name $probe_name \
       --disable-outbound-snat true \
       --idle-timeout 30 \
       --enable-tcp-reset true \
-      --load-distribution Default
+      --load-distribution $distribution
     
-    log_success "Load balancing rule created: $LB_RULE_NAME"
+    log_success "Load balancing rule created: $rule_name"
     log_info "  Frontend port: $POSTGRES_PORT"
     log_info "  Backend port: $POSTGRES_PORT"
-    log_info "  Distribution: Default (5-tuple hash)"
+    log_info "  Distribution: $distribution"
     log_info "  Idle timeout: 30 seconds"
+}
+
+# Create Write Load Balancing Rule
+create_write_load_balancing_rule() {
+    if [[ "$SETUP_MODE" == "read-only" ]]; then
+        return 0
+    fi
+    
+    # Use Default distribution for write - ensures connections go to PRIMARY only
+    create_load_balancing_rule \
+        "$LB_NAME_WRITE" \
+        "$LB_RULE_NAME_WRITE" \
+        "$LB_FRONTEND_IP_WRITE" \
+        "$LB_PROBE_NAME_PRIMARY" \
+        "WRITE (PRIMARY)" \
+        "Default"
+}
+
+# Create Read Load Balancing Rule
+create_read_load_balancing_rule() {
+    if [[ "$SETUP_MODE" == "write-only" ]]; then
+        return 0
+    fi
+    
+    # Use Default distribution for read - distributes across all REPLICAs
+    create_load_balancing_rule \
+        "$LB_NAME_READ" \
+        "$LB_RULE_NAME_READ" \
+        "$LB_FRONTEND_IP_READ" \
+        "$LB_PROBE_NAME_REPLICA" \
+        "READ (REPLICAS)" \
+        "Default"
 }
 
 # Configure Network Security Group
@@ -393,7 +515,10 @@ configure_nsg() {
 
 # Add nodes to backend pool
 add_backend_pool_members() {
-    log_step "Adding Nodes to Backend Pool"
+    local lb_name="$1"
+    local lb_purpose="$2"
+    
+    log_step "Adding Nodes to Backend Pool ($lb_purpose)"
     
     for NODE in $NODE1_NAME $NODE2_NAME $NODE3_NAME; do
         log_info "Processing node: $NODE"
@@ -412,7 +537,7 @@ add_backend_pool_members() {
           --resource-group $RESOURCE_GROUP \
           --nic-name $NIC_NAME \
           --ip-config-name ipconfig1 \
-          --lb-name $LB_NAME \
+          --lb-name $lb_name \
           --address-pool $LB_BACKEND_POOL 2>/dev/null; then
             log_success "  ✓ Added $NODE to backend pool"
         else
@@ -420,55 +545,102 @@ add_backend_pool_members() {
         fi
     done
     
-    log_success "All nodes processed"
+    log_success "All nodes processed for $lb_purpose"
+}
+
+# Add nodes to write backend pool
+add_write_backend_pool_members() {
+    if [[ "$SETUP_MODE" == "read-only" ]]; then
+        return 0
+    fi
+    
+    add_backend_pool_members "$LB_NAME_WRITE" "WRITE"
+}
+
+# Add nodes to read backend pool
+add_read_backend_pool_members() {
+    if [[ "$SETUP_MODE" == "write-only" ]]; then
+        return 0
+    fi
+    
+    add_backend_pool_members "$LB_NAME_READ" "READ"
 }
 
 # Verify setup
 verify_setup() {
     log_step "Verifying Setup"
     
-    log_info "Checking load balancer configuration..."
-    
-    # Get load balancer IP
-    local LB_IP=""
-    if [[ "$LB_TYPE" == "internal" ]]; then
-        LB_IP=$(az network lb frontend-ip show \
+    if [[ "$SETUP_MODE" == "write-only" ]] || [[ "$SETUP_MODE" == "both" ]]; then
+        log_info "Checking WRITE load balancer configuration..."
+        
+        # Get load balancer IP
+        local LB_IP_WRITE=""
+        if [[ "$LB_TYPE" == "internal" ]]; then
+            LB_IP_WRITE=$(az network lb frontend-ip show \
+              --resource-group $RESOURCE_GROUP \
+              --lb-name $LB_NAME_WRITE \
+              --name $LB_FRONTEND_IP_WRITE \
+              --query privateIpAddress -o tsv)
+        else
+            LB_IP_WRITE=$(az network public-ip show \
+              --resource-group $RESOURCE_GROUP \
+              --name pip-$LB_NAME_WRITE \
+              --query ipAddress -o tsv)
+        fi
+        
+        log_info "WRITE Load Balancer IP: $LB_IP_WRITE"
+        
+        # Check backend pool members
+        local backend_count_write=$(az network lb address-pool show \
           --resource-group $RESOURCE_GROUP \
-          --lb-name $LB_NAME \
-          --name $LB_FRONTEND_IP \
-          --query privateIpAddress -o tsv)
-    else
-        LB_IP=$(az network public-ip show \
-          --resource-group $RESOURCE_GROUP \
-          --name pip-$LB_NAME \
-          --query ipAddress -o tsv)
+          --lb-name $LB_NAME_WRITE \
+          --name $LB_BACKEND_POOL \
+          --query 'backendIpConfigurations | length(@)' -o tsv)
+        
+        log_info "WRITE backend pool members: $backend_count_write"
+        
+        if [[ "$backend_count_write" -eq 3 ]]; then
+            log_success "All 3 nodes in WRITE backend pool"
+        else
+            log_warn "Expected 3 nodes in WRITE pool, found $backend_count_write"
+        fi
     fi
     
-    log_info "Load Balancer IP: $LB_IP"
-    
-    # Check backend pool members
-    log_info "Checking backend pool members..."
-    local backend_count=$(az network lb address-pool show \
-      --resource-group $RESOURCE_GROUP \
-      --lb-name $LB_NAME \
-      --name $LB_BACKEND_POOL \
-      --query 'backendIpConfigurations | length(@)' -o tsv)
-    
-    log_info "Backend pool members: $backend_count"
-    
-    if [[ "$backend_count" -eq 3 ]]; then
-        log_success "All 3 nodes in backend pool"
-    else
-        log_warn "Expected 3 nodes, found $backend_count"
+    if [[ "$SETUP_MODE" == "read-only" ]] || [[ "$SETUP_MODE" == "both" ]]; then
+        log_info "Checking READ load balancer configuration..."
+        
+        # Get load balancer IP
+        local LB_IP_READ=""
+        if [[ "$LB_TYPE" == "internal" ]]; then
+            LB_IP_READ=$(az network lb frontend-ip show \
+              --resource-group $RESOURCE_GROUP \
+              --lb-name $LB_NAME_READ \
+              --name $LB_FRONTEND_IP_READ \
+              --query privateIpAddress -o tsv)
+        else
+            LB_IP_READ=$(az network public-ip show \
+              --resource-group $RESOURCE_GROUP \
+              --name pip-$LB_NAME_READ \
+              --query ipAddress -o tsv)
+        fi
+        
+        log_info "READ Load Balancer IP: $LB_IP_READ"
+        
+        # Check backend pool members
+        local backend_count_read=$(az network lb address-pool show \
+          --resource-group $RESOURCE_GROUP \
+          --lb-name $LB_NAME_READ \
+          --name $LB_BACKEND_POOL \
+          --query 'backendIpConfigurations | length(@)' -o tsv)
+        
+        log_info "READ backend pool members: $backend_count_read"
+        
+        if [[ "$backend_count_read" -eq 3 ]]; then
+            log_success "All 3 nodes in READ backend pool"
+        else
+            log_warn "Expected 3 nodes in READ pool, found $backend_count_read"
+        fi
     fi
-    
-    # Check health probe
-    log_info "Checking health probe configuration..."
-    az network lb probe show \
-      --resource-group $RESOURCE_GROUP \
-      --lb-name $LB_NAME \
-      --name $LB_PROBE_NAME \
-      --query '{Port:port,Protocol:protocol,Path:requestPath}' -o table
     
     log_success "Configuration verified"
 }
@@ -477,66 +649,155 @@ verify_setup() {
 show_completion_info() {
     log_step "SETUP COMPLETED SUCCESSFULLY"
     
-    # Get load balancer IP
-    local LB_IP=""
-    if [[ "$LB_TYPE" == "internal" ]]; then
-        LB_IP=$(az network lb frontend-ip show \
-          --resource-group $RESOURCE_GROUP \
-          --lb-name $LB_NAME \
-          --name $LB_FRONTEND_IP \
-          --query privateIpAddress -o tsv)
-    else
-        LB_IP=$(az network public-ip show \
-          --resource-group $RESOURCE_GROUP \
-          --name pip-$LB_NAME \
-          --query ipAddress -o tsv)
+    echo ""
+    echo "================================================"
+    echo "  ${CYAN}PostgreSQL HA Load Balancers Created${NC}"
+    echo "  Setup Mode: ${YELLOW}$SETUP_MODE${NC}"
+    echo "  Type: ${YELLOW}$LB_TYPE${NC}"
+    echo "================================================"
+    echo ""
+    
+    if [[ "$SETUP_MODE" == "write-only" ]] || [[ "$SETUP_MODE" == "both" ]]; then
+        # Get WRITE load balancer IP
+        local LB_IP_WRITE=""
+        if [[ "$LB_TYPE" == "internal" ]]; then
+            LB_IP_WRITE=$(az network lb frontend-ip show \
+              --resource-group $RESOURCE_GROUP \
+              --lb-name $LB_NAME_WRITE \
+              --name $LB_FRONTEND_IP_WRITE \
+              --query privateIpAddress -o tsv)
+        else
+            LB_IP_WRITE=$(az network public-ip show \
+              --resource-group $RESOURCE_GROUP \
+              --name pip-$LB_NAME_WRITE \
+              --query ipAddress -o tsv)
+        fi
+        
+        echo "┌────────────────────────────────────────────────────────────────"
+        echo "│ ${GREEN}WRITE Load Balancer (PRIMARY Only)${NC}"
+        echo "├────────────────────────────────────────────────────────────────"
+        echo "│ Name: ${CYAN}$LB_NAME_WRITE${NC}"
+        echo "│ IP Address: ${CYAN}$LB_IP_WRITE${NC}"
+        echo "│ Port: ${CYAN}$POSTGRES_PORT${NC}"
+        echo "│ Health Check: ${CYAN}/primary${NC} (port $PATRONI_API_PORT)"
+        echo "│ Purpose: ${YELLOW}All write operations (INSERT, UPDATE, DELETE)${NC}"
+        echo "└────────────────────────────────────────────────────────────────"
+        echo ""
     fi
     
+    if [[ "$SETUP_MODE" == "read-only" ]] || [[ "$SETUP_MODE" == "both" ]]; then
+        # Get READ load balancer IP
+        local LB_IP_READ=""
+        if [[ "$LB_TYPE" == "internal" ]]; then
+            LB_IP_READ=$(az network lb frontend-ip show \
+              --resource-group $RESOURCE_GROUP \
+              --lb-name $LB_NAME_READ \
+              --name $LB_FRONTEND_IP_READ \
+              --query privateIpAddress -o tsv)
+        else
+            LB_IP_READ=$(az network public-ip show \
+              --resource-group $RESOURCE_GROUP \
+              --name pip-$LB_NAME_READ \
+              --query ipAddress -o tsv)
+        fi
+        
+        echo "┌────────────────────────────────────────────────────────────────"
+        echo "│ ${GREEN}READ Load Balancer (REPLICAs Only)${NC}"
+        echo "├────────────────────────────────────────────────────────────────"
+        echo "│ Name: ${CYAN}$LB_NAME_READ${NC}"
+        echo "│ IP Address: ${CYAN}$LB_IP_READ${NC}"
+        echo "│ Port: ${CYAN}$POSTGRES_PORT${NC}"
+        echo "│ Health Check: ${CYAN}/replica${NC} (port $PATRONI_API_PORT)"
+        echo "│ Purpose: ${YELLOW}All read operations (SELECT) distributed across replicas${NC}"
+        echo "└────────────────────────────────────────────────────────────────"
+        echo ""
+    fi
+    
+    if [[ "$SETUP_MODE" == "both" ]]; then
+        log_info "Connection Examples:"
+        echo ""
+        echo "  ${GREEN}# Write operations (PRIMARY)${NC}"
+        echo "  psql -h $LB_IP_WRITE -p $POSTGRES_PORT -U postgres -d mydb"
+        echo "  psql -h $LB_IP_WRITE -p $POSTGRES_PORT -U postgres -c \"INSERT INTO ...\""
+        echo ""
+        echo "  ${GREEN}# Read operations (REPLICAs - load balanced)${NC}"
+        echo "  psql -h $LB_IP_READ -p $POSTGRES_PORT -U postgres -d mydb -c \"SELECT ...\""
+        echo ""
+    elif [[ "$SETUP_MODE" == "write-only" ]]; then
+        echo "  ${GREEN}# Write operations (PRIMARY)${NC}"
+        echo "  psql -h $LB_IP_WRITE -p $POSTGRES_PORT -U postgres -d mydb"
+        echo ""
+    else
+        echo "  ${GREEN}# Read operations (REPLICAs)${NC}"
+        echo "  psql -h $LB_IP_READ -p $POSTGRES_PORT -U postgres -d mydb"
+        echo ""
+    fi
+    
+    log_info "Test Health Probes:"
+    echo "  ${GREEN}# Test PRIMARY endpoint (should return 200 only on PRIMARY)${NC}"
+    echo "  curl -s -o /dev/null -w \"%{http_code}\" http://10.0.0.4:$PATRONI_API_PORT/primary"
+    echo "  curl -s -o /dev/null -w \"%{http_code}\" http://10.0.0.5:$PATRONI_API_PORT/primary"
+    echo "  curl -s -o /dev/null -w \"%{http_code}\" http://10.0.0.6:$PATRONI_API_PORT/primary"
     echo ""
-    echo "================================================"
-    echo "  Load Balancer: $LB_NAME"
-    echo "  Type: $LB_TYPE"
-    echo "  IP Address: $LB_IP"
-    echo "  Status: $ACTIVE"
-    echo "================================================"
+    echo "  ${GREEN}# Test REPLICA endpoint (should return 200 only on REPLICAs)${NC}"
+    echo "  curl -s -o /dev/null -w \"%{http_code}\" http://10.0.0.4:$PATRONI_API_PORT/replica"
+    echo "  curl -s -o /dev/null -w \"%{http_code}\" http://10.0.0.5:$PATRONI_API_PORT/replica"
+    echo "  curl -s -o /dev/null -w \"%{http_code}\" http://10.0.0.6:$PATRONI_API_PORT/replica"
     echo ""
     
-    log_info "Connection Information:"
-    echo "  PostgreSQL Port: $POSTGRES_PORT"
-    echo "  Health Probe Port: $PATRONI_API_PORT"
-    echo "  Health Check Endpoint: /primary"
+    log_info "Verify Cluster Status:"
+    echo "  ${GREEN}patroni-status${NC}"
+    echo "  ${GREEN}patronictl -c /etc/patroni/patroni.yml list${NC}"
     echo ""
     
-    log_info "Test PostgreSQL Connection:"
-    echo "================================================"
+    log_info "Test Load Distribution (READ Load Balancer):"
+    echo "  ${GREEN}# Run multiple times to see different replica IPs${NC}"
+    echo "  for i in {1..10}; do"
+    echo "    psql -h $LB_IP_READ -p $POSTGRES_PORT -U postgres -t -c \"SELECT inet_server_addr();\""
+    echo "  done"
     echo ""
-    echo "  psql -h $LB_IP -p $POSTGRES_PORT -U postgres -d postgres"
-    echo ""
-    echo "================================================"
     
-    log_info "Test Health Probe (from each node):"
-    echo "================================================"
-    echo "  curl http://localhost:$PATRONI_API_PORT/primary"
-    echo "  Returns HTTP 200 only if node is PRIMARY"
-    echo ""
-    echo "================================================"
+    log_info "Monitor Load Balancers:"
+    if [[ "$SETUP_MODE" == "both" ]] || [[ "$SETUP_MODE" == "write-only" ]]; then
+        echo "  ${GREEN}# WRITE Load Balancer${NC}"
+        echo "  az network lb show -g $RESOURCE_GROUP -n $LB_NAME_WRITE -o table"
+        echo "  az network lb probe show -g $RESOURCE_GROUP --lb-name $LB_NAME_WRITE -n $LB_PROBE_NAME_PRIMARY -o table"
+        echo ""
+    fi
+    if [[ "$SETUP_MODE" == "both" ]] || [[ "$SETUP_MODE" == "read-only" ]]; then
+        echo "  ${GREEN}# READ Load Balancer${NC}"
+        echo "  az network lb show -g $RESOURCE_GROUP -n $LB_NAME_READ -o table"
+        echo "  az network lb probe show -g $RESOURCE_GROUP --lb-name $LB_NAME_READ -n $LB_PROBE_NAME_REPLICA -o table"
+        echo ""
+    fi
     
-    log_info "Monitor Load Balancer:"
-    echo "================================================"
-    echo "  az network lb show -g $RESOURCE_GROUP -n $LB_NAME -o table"
-    echo "  az network lb probe show -g $RESOURCE_GROUP --lb-name $LB_NAME -n $LB_PROBE_NAME -o table"
+    log_warn "Application Configuration:"
     echo ""
-    echo "================================================"
-    
-    log_warn "Next Steps:"
-    echo "  1. Verify Patroni is running on all nodes: systemctl status patroni.service"
-    echo "  2. Test health endpoints on each node"
-    echo "  3. Connect to PostgreSQL through load balancer"
-    echo "  4. Test failover by performing switchover"
+    echo "  Configure your application to use DIFFERENT connection strings:"
     echo ""
-    echo "================================================"
+    echo "  ${YELLOW}# For write operations${NC}"
+    echo "  WRITE_DB_HOST=$LB_IP_WRITE"
+    echo "  WRITE_DB_PORT=$POSTGRES_PORT"
+    echo ""
+    echo "  ${YELLOW}# For read operations${NC}"
+    echo "  READ_DB_HOST=$LB_IP_READ"
+    echo "  READ_DB_PORT=$POSTGRES_PORT"
+    echo ""
+    echo "  ${CYAN}Example application code:${NC}"
+    echo "  # Python with psycopg2"
+    echo "  write_conn = psycopg2.connect(host='$LB_IP_WRITE', port=$POSTGRES_PORT, ...)"
+    echo "  read_conn = psycopg2.connect(host='$LB_IP_READ', port=$POSTGRES_PORT, ...)"
+    echo ""
     
-    log_success "Azure Load Balancer Completed"
+    log_warn "Best Practices:"
+    echo "  1. ${CYAN}Use WRITE LB for:${NC} INSERT, UPDATE, DELETE, DDL statements"
+    echo "  2. ${CYAN}Use READ LB for:${NC} SELECT queries, reports, analytics"
+    echo "  3. ${CYAN}Monitor replication lag:${NC} Ensure replicas are in sync"
+    echo "  4. ${CYAN}Test failover:${NC} Verify automatic failover works correctly"
+    echo "  5. ${CYAN}Connection pooling:${NC} Use pgBouncer or application-level pooling"
+    echo ""
+    
+    log_success "Azure Load Balancer setup completed successfully!"
 }
 
 #=======================================
@@ -555,10 +816,6 @@ main() {
                 LOCATION="$2"
                 shift 2
                 ;;
-            -n|--lb-name)
-                LB_NAME="$2"
-                shift 2
-                ;;
             -v|--vnet-name)
                 VNET_NAME="$2"
                 shift 2
@@ -567,12 +824,20 @@ main() {
                 SUBNET_NAME="$2"
                 shift 2
                 ;;
-            -i|--lb-ip)
-                LB_PRIVATE_IP="$2"
+            -w|--write-ip)
+                LB_PRIVATE_IP_WRITE="$2"
+                shift 2
+                ;;
+            -r|--read-ip)
+                LB_PRIVATE_IP_READ="$2"
                 shift 2
                 ;;
             -t|--lb-type)
                 LB_TYPE="$2"
+                shift 2
+                ;;
+            -m|--mode)
+                SETUP_MODE="$2"
                 shift 2
                 ;;
             -1|--node1-name)
@@ -606,7 +871,15 @@ main() {
         exit 1
     fi
     
+    # Validate SETUP_MODE
+    if [[ "$SETUP_MODE" != "write-only" && "$SETUP_MODE" != "read-only" && "$SETUP_MODE" != "both" ]]; then
+        log_error "Invalid setup mode: $SETUP_MODE"
+        log_error "Must be 'write-only', 'read-only', or 'both'"
+        exit 1
+    fi
+    
     log_step "AZURE LOAD BALANCER SETUP FOR PATRONI HA"
+    log_info "Setup Mode: $SETUP_MODE"
     
     # Pre-flight checks
     check_azure_cli
@@ -617,15 +890,27 @@ main() {
     verify_vms
     show_configuration
     
-    # Setup steps
-    create_load_balancer
-    create_health_probe
-    create_load_balancing_rule
-    configure_nsg
-    add_backend_pool_members
-    verify_setup
+    # Setup WRITE Load Balancer (PRIMARY)
+    if [[ "$SETUP_MODE" == "write-only" ]] || [[ "$SETUP_MODE" == "both" ]]; then
+        create_write_load_balancer
+        create_write_health_probe
+        create_write_load_balancing_rule
+        add_write_backend_pool_members
+    fi
     
-    # Final info
+    # Setup READ Load Balancer (REPLICAS)
+    if [[ "$SETUP_MODE" == "read-only" ]] || [[ "$SETUP_MODE" == "both" ]]; then
+        create_read_load_balancer
+        create_read_health_probe
+        create_read_load_balancing_rule
+        add_read_backend_pool_members
+    fi
+    
+    # Configure NSG (common for both)
+    configure_nsg
+    
+    # Verify and show results
+    verify_setup
     show_completion_info
     
     log_success "Script execution completed successfully!"
