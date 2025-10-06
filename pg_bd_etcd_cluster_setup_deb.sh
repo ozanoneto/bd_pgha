@@ -21,12 +21,15 @@ set -e
 # etcd version
 ETCD_VERSION="3.6.5"
 
-# System user and directories
+# System User and Directories
 ETCD_USER="etcd"
 ETCD_DATA_DIR="/var/lib/etcd"
 ETCD_CONFIG_DIR="/etc/etcd"
 ETCD_LOG_DIR="/var/log/etcd"
 CLUSTER_TOKEN="pgha-etcd-cluster"
+
+# Architecture detection (will be set automatically)
+ETCD_ARCH=""
 
 #============================================================
 # STEP 2: NODES IP CONFIGURATION
@@ -82,6 +85,33 @@ check_root() {
     fi
 }
 
+# Detect system architecture
+detect_architecture() {
+    log_step "Detecting System Architecture"
+    
+    local arch=$(uname -m)
+    
+    case "$arch" in
+        x86_64|amd64)
+            ETCD_ARCH="amd64"
+            log_info "Architecture detected: AMD64/x86_64"
+            ;;
+        aarch64|arm64)
+            ETCD_ARCH="arm64"
+            log_info "Architecture detected: ARM64/aarch64"
+            ;;
+        armv7l|armhf)
+            ETCD_ARCH="arm"
+            log_info "Architecture detected: ARM v7"
+            ;;
+        *)
+            log_error "Unsupported architecture: $arch"
+            log_error "Supported architectures: amd64, arm64, arm"
+            exit 1
+            ;;
+    esac
+}
+
 # Detect current node
 detect_node() {
     local current_ip=$(hostname -I | awk '{print $1}')
@@ -107,22 +137,47 @@ detect_node() {
     log_info "Node Detected: $CURRENT_NODE_NAME ($CURRENT_NODE_IP)"
 }
 
-# Show configuration
+# Build cluster string dynamically for current node
+build_cluster_string() {
+    local cluster_members=""
+    
+    # Always include current node
+    cluster_members="${CURRENT_NODE_NAME}=http://${CURRENT_NODE_IP}:2380"
+    
+    # Add other nodes
+    if [[ "$CURRENT_NODE_IP" != "$NODE1_IP" ]]; then
+        cluster_members="${cluster_members},${NODE1_NAME}=http://${NODE1_IP}:2380"
+    fi
+    
+    if [[ "$CURRENT_NODE_IP" != "$NODE2_IP" ]]; then
+        cluster_members="${cluster_members},${NODE2_NAME}=http://${NODE2_IP}:2380"
+    fi
+    
+    if [[ "$CURRENT_NODE_IP" != "$NODE3_IP" ]]; then
+        cluster_members="${cluster_members},${NODE3_NAME}=http://${NODE3_IP}:2380"
+    fi
+    
+    echo "$cluster_members"
+}
+
+# Show configs
 show_configuration() {
     log_step "CLUSTER CONFIGURATION"
     echo ""
     echo "  etcd Version: $ETCD_VERSION"
+    echo "  Architecture: $ETCD_ARCH"
     echo "  Cluster Token: $CLUSTER_TOKEN"
     echo ""
-    echo "  Node 1: $NODE1_NAME - $NODE1_IP"
-    echo "  Node 2: $NODE2_NAME - $NODE2_IP"
-    echo "  Node 3: $NODE3_NAME - $NODE3_IP"
+    echo "  Node 01: $NODE1_NAME - $NODE1_IP"
+    echo "  Node 02: $NODE2_NAME - $NODE2_IP"
+    echo "  Node 03: $NODE3_NAME - $NODE3_IP"
     echo ""
     echo "  Current Node: $CURRENT_NODE_NAME ($CURRENT_NODE_IP)"
+    echo "  Cluster String: $(build_cluster_string)"
     echo ""
-    read -p "Continue with installation? (yes/no): " confirm
+    read -p "Continue with Installation? (yes/no): " confirm
     if [[ "$confirm" != "yes" ]]; then
-        log_warn "Installation cancelled"
+        log_warn "Installation Cancelled"
         exit 0
     fi
 }
@@ -137,11 +192,11 @@ install_dependencies() {
     apt-get update -qq
     apt-get install -y wget curl tar
     
-    log_info "Dependencies installed"
+    log_info "Dependencies Installed"
 }
 
 create_etcd_user() {
-    log_step "Creating etcd user"
+    log_step "Creating etcd User"
     
     if id "$ETCD_USER" &>/dev/null; then
         log_warn "User $ETCD_USER already exists"
@@ -182,10 +237,10 @@ download_and_install_etcd() {
         fi
     fi
     
-    # Download
+    # Download with architecture-specific URL
     cd /tmp
-    local download_url="https://github.com/etcd-io/etcd/releases/download/v${ETCD_VERSION}/etcd-v${ETCD_VERSION}-linux-amd64.tar.gz"
-    local tarball="etcd-v${ETCD_VERSION}-linux-amd64.tar.gz"
+    local download_url="https://github.com/etcd-io/etcd/releases/download/v${ETCD_VERSION}/etcd-v${ETCD_VERSION}-linux-${ETCD_ARCH}.tar.gz"
+    local tarball="etcd-v${ETCD_VERSION}-linux-${ETCD_ARCH}.tar.gz"
     
     log_info "Baixando de / Downloading from: $download_url"
     
@@ -195,6 +250,7 @@ download_and_install_etcd() {
     
     wget -q --show-progress "$download_url" || {
         log_error "Falha no download / Download failed"
+        log_error "URL: $download_url"
         exit 1
     }
     
@@ -204,16 +260,16 @@ download_and_install_etcd() {
     
     # Install binaries
     log_info "Instalando binários / Installing binaries..."
-    cp "etcd-v${ETCD_VERSION}-linux-amd64/etcd" /usr/local/bin/
-    cp "etcd-v${ETCD_VERSION}-linux-amd64/etcdctl" /usr/local/bin/
-    cp "etcd-v${ETCD_VERSION}-linux-amd64/etcdutl" /usr/local/bin/
+    cp "etcd-v${ETCD_VERSION}-linux-${ETCD_ARCH}/etcd" /usr/local/bin/
+    cp "etcd-v${ETCD_VERSION}-linux-${ETCD_ARCH}/etcdctl" /usr/local/bin/
+    cp "etcd-v${ETCD_VERSION}-linux-${ETCD_ARCH}/etcdutl" /usr/local/bin/
     
     chmod +x /usr/local/bin/etcd
     chmod +x /usr/local/bin/etcdctl
     chmod +x /usr/local/bin/etcdutl
     
     # Cleanup
-    rm -rf "etcd-v${ETCD_VERSION}-linux-amd64"*
+    rm -rf "etcd-v${ETCD_VERSION}-linux-${ETCD_ARCH}"*
     
     # Verify installation
     local version=$(/usr/local/bin/etcd --version | head -n1)
@@ -223,8 +279,8 @@ download_and_install_etcd() {
 configure_etcd() {
     log_step "Configuring etcd"
     
-    # Build cluster string
-    local cluster_string="${NODE1_NAME}=http://${NODE1_IP}:2380,${NODE2_NAME}=http://${NODE2_IP}:2380,${NODE3_NAME}=http://${NODE3_IP}:2380"
+    # Build cluster string for this node
+    local cluster_string=$(build_cluster_string)
     
     log_info "Cluster string: $cluster_string"
     
@@ -319,6 +375,7 @@ show_post_install_info() {
     echo "================================================"
     echo "  Node configured: $CURRENT_NODE_NAME"
     echo "  IP: $CURRENT_NODE_IP"
+    echo "  Architecture: $ETCD_ARCH"
     echo "  READY BUT NOT STARTED"
     echo "================================================"
     echo ""
@@ -326,62 +383,91 @@ show_post_install_info() {
     if [[ $NODE_NUMBER -eq 1 ]]; then
         log_warn "NEXT STEPS (NODE 1 - bootstrap):"
         echo ""
-        echo "1) On NODE 2 (${NODE2_NAME} - ${NODE2_IP}) run this script and configure the node"
-        echo "   sudo ${0}  # run the same installer on NODE 2"
+        echo "1) Configure NODE 2 and NODE 3 by running this script on each node"
         echo ""
-        echo "2) On NODE 3 (${NODE3_NAME} - ${NODE3_IP}) run this script and configure the node"
-        echo "   sudo ${0}  # run the same installer on NODE 3"
+        echo "2) Start etcd on NODE 1 FIRST:"
+        echo "   sudo systemctl start etcd.service$"
+        echo "   sudo systemctl status etcd.service"
         echo ""
-        echo "After all three nodes are configured, start the etcd services in sequence on each node (one at a time):"
-        echo "  # On NODE 1:"
-        echo "  sudo systemctl start etcd.service"
-        echo "  sudo systemctl status etcd.service"
+        echo "3) Verify NODE 1 is running and check cluster status:"
+        echo "   etcdctl --endpoints=http://127.0.0.1:2379 member list"
         echo ""
-        echo "  # On NODE 2:"
-        echo "  sudo systemctl start etcd.service"
-        echo "  sudo systemctl status etcd.service"
+        echo "========================================================================="
+        echo "4) Add NODE 2 and NODE 3 as members (run on NODE 1):"
         echo ""
-        echo "  # On NODE 3:"
-        echo "  sudo systemctl start etcd.service"
-        echo "  sudo systemctl status etcd.service"
+        echo "========================================================================="
+        echo "   etcdctl member add ${NODE2_NAME} --peer-urls=http://${NODE2_IP}:2380"
+        echo "========================================================================="
+        echo ""
+        echo "   Expected Output:"
+        echo "   ========================================================================="        
+        echo "   │ ETCD_NAME=\"${NODE2_NAME}\""
+        echo "   │ ETCD_INITIAL_CLUSTER=\"${NODE1_NAME}=http://${NODE1_IP}:2380,${NODE2_NAME}=http://${NODE2_IP}:2380\""
+        echo "   │ ETCD_INITIAL_CLUSTER_STATE=\"existing\""
+        echo "   ========================================================================="
+        echo ""
+        echo "========================================================================="
+        echo "   etcdctl member add ${NODE3_NAME} --peer-urls=http://${NODE3_IP}:2380"
+        echo "========================================================================="
+        echo ""
+        echo "   Expected Output:"
+        echo "   ========================================================================="        
+        echo "   │ ETCD_NAME=\"${NODE3_NAME}\""
+        echo "   │ ETCD_INITIAL_CLUSTER=\"${NODE1_NAME}=http://${NODE1_IP}:2380,${NODE2_NAME}=http://${NODE2_IP}:2380,${NODE3_NAME}=http://${NODE3_IP}:2380\""
+        echo "   │ ETCD_INITIAL_CLUSTER_STATE=\"existing\""
+        echo "   ========================================================================="        
+        echo ""
+        echo "5) Update NODE 2 config to join existing cluster:"
+        echo "   NODE 2 (${NODE2_IP})"
+        echo "   sudo sed -i 's/ETCD_INITIAL_CLUSTER_STATE=\"new\"/ETCD_INITIAL_CLUSTER_STATE=\"existing\"/' /etc/etcd/etcd.conf"        
+        echo ""
+        echo "6) Update NODE 3 config to join existing cluster:"
+        echo "   NODE 3 (${NODE3_IP})"
+        echo "   sudo sed -i 's/ETCD_INITIAL_CLUSTER_STATE=\"new\"/ETCD_INITIAL_CLUSTER_STATE=\"existing\"/' /etc/etcd/etcd.conf"
+        echo ""
+        echo "7) Verify full cluster health (run from any node):"
+        echo "   etcdctl --endpoints=http://${NODE1_IP}:2379,http://${NODE2_IP}:2379,http://${NODE3_IP}:2379 endpoint health"
+        echo "   etcdctl member list"
         echo ""
     elif [[ $NODE_NUMBER -eq 2 ]]; then
         log_warn "NEXT STEP (NODE 2):"
         echo ""
-        echo "1) On NODE 3 (${NODE3_NAME} - ${NODE3_IP}) run this script and configure the node"
-        echo "   sudo ${0}  # run the same installer on NODE 3"
+        echo "1) Configure NODE 3 by running this script"
         echo ""
-        echo "2) After all nodes are configured, start the services in sequence (Node1 --> Node2 --> Node3):"
-        echo "  sudo systemctl start etcd.service   # on Node1"
-        echo "  sudo systemctl start etcd.service   # on Node1"
-        echo "  sudo systemctl start etcd.service   # on Node2"
-        echo "  sudo systemctl start etcd.service   # on Node3"
+        echo "2) Wait for instructions from NODE 1 operator"
+        echo "   - NODE 1 must start first"
+        echo "   - NODE 1 operator will add this node with: etcdctl member add${NC}"
+        echo "   - Then update config and start this node"
+        echo ""
+        echo "3) When ready, NODE 1 operator will execute:"
+        echo "   etcdctl member add ${NODE2_NAME} --peer-urls=http://${NODE2_IP}:2380"
+        echo ""
+        echo "4) After member add completes, update config HERE on NODE 2:"
+        echo "   sudo sed -i 's/ETCD_INITIAL_CLUSTER_STATE=\"new\"/ETCD_INITIAL_CLUSTER_STATE=\"existing\"/' /etc/etcd/etcd.conf"
+        echo "   sudo systemctl start etcd.service"
         echo ""
     else
         log_info "ALL NODES CONFIGURED (NODE 3)"
         echo ""
-        log_warn "Now Start the Services IN SEQUENCE (one at a time, ~15s):"
-        echo "=========================================================================="
-        echo "STEP 1 - Add Nodes (${NODE1_IP}):"
+        log_warn "Wait for instructions from NODE 1 operator"
         echo ""
-        echo "etcdctl member add lx-pgnode-02 --peer-urls=http://10.0.0.5:2380"
-        echo "etcdctl member add lx-pgnode-03 --peer-urls=http://10.0.0.6:2380"
-        echo "=========================================================================="
+        echo "Node 3 is ready but MUST wait for:"
+        echo "  1) NODE 1 to start"
+        echo "  2) NODE 2 to be added and started"
+        echo "  3) NODE 1 operator to add NODE 3"
         echo ""
-        echo "=========================================================================="
+        echo "When ready, NODE 1 operator will execute:"
+        echo "  etcdctl member add ${NODE3_NAME} --peer-urls=http://${NODE3_IP}:2380"
         echo ""
-        echo "STEP 2 - Node 1 (${NODE1_IP}):"
-        echo "  sudo systemctl start etcd.service && sudo systemctl status etcd.service"
+        echo "After member add completes, update config HERE on NODE 3:"
+        echo "  sudo sed -i 's/ETCD_INITIAL_CLUSTER_STATE=\"new\"/ETCD_INITIAL_CLUSTER_STATE=\"existing\"/' /etc/etcd/etcd.conf"
+        echo "  sudo systemctl start etcd.service"
         echo ""
-        echo ""
-        echo "STEP 3 - Node 2 (${NODE2_IP}):"
-        echo "  sudo systemctl start etcd.service && sudo systemctl status etcd.service"
-        echo ""
-        echo ""
-        echo "STEP 4 - Node 3 (${NODE3_IP}):"
-        echo "  sudo systemctl start etcd.service && sudo systemctl status etcd.service"
-        echo ""
-        echo "=========================================================================="        
+        echo "After NODE 3 starts, verify full cluster (from any node):"
+        echo "  etcdctl --endpoints=http://${NODE1_IP}:2379,http://${NODE2_IP}:2379,http://${NODE3_IP}:2379 endpoint health"
+        echo "  etcdctl member list${NC}"
+        echo ""        
+        echo "=========================================================================" 
     fi
 }
 
@@ -394,6 +480,7 @@ main() {
     
     # Pre-flight checks
     check_root
+    detect_architecture
     detect_node
     show_configuration
     
@@ -419,4 +506,4 @@ main() {
 }
 
 # Execute main function
-main "$@"       
+main "$@"
