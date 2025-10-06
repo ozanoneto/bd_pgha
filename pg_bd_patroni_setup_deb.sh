@@ -416,7 +416,7 @@ postgresql:
   pgpass: /var/lib/postgresql/.pgpass
   authentication:
     replication:
-      username: replicator
+      username: usr_replicator
       password: $replicator_password
     superuser:
       username: postgres
