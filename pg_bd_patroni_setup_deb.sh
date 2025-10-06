@@ -295,9 +295,26 @@ scope: $SCOPE
 namespace: /pgservice/
 name: $node_name
 
+log:
+  level: WARNING
+  traceback_level: ERROR
+  format: '%(asctime)s %(levelname)s: %(message)s'
+  dateformat: ''
+  max_queue_size: 1000
+  dir: /var/log/patroni
+  file_num: 4
+  file_size: 25000000
+  loggers:
+    patroni.postmaster: WARNING
+    urllib3: WARNING
+
 restapi:
-  listen: $node_ip:$PATRONI_API_PORT
+  listen: $node_ip: $PATRONI_API_PORT
   connect_address: $node_ip:$PATRONI_API_PORT
+  authentication:
+      username: patroni
+      password: 8UITnqgAUiabInQqVobiRr7acy7
+  request_queue_size: 5
 
 etcd3:
   hosts: $etcd_url_list
