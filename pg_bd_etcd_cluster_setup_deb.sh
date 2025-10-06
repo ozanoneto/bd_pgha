@@ -34,15 +34,15 @@ ETCD_ARCH=""
 #============================================================
 # STEP 2: NODES IP CONFIGURATION
 #============================================================
-# Node 1
+# PG Node 01
 NODE1_NAME="lx-pgnode-01"
 NODE1_IP="10.0.0.4"
 
-# Node 2
+# PG Node 02
 NODE2_NAME="lx-pgnode-02"
 NODE2_IP="10.0.0.5"
 
-# Node 3
+# PG Node 03
 NODE3_NAME="lx-pgnode-03"
 NODE3_IP="10.0.0.6"
 
@@ -216,14 +216,14 @@ create_directories() {
     chown -R "$ETCD_USER:$ETCD_USER" "$ETCD_DATA_DIR"
     chown -R "$ETCD_USER:$ETCD_USER" "$ETCD_LOG_DIR"
     
-    log_info "Directories created:"
+    log_info "Directories Created:"
     log_info "  - $ETCD_DATA_DIR"
     log_info "  - $ETCD_CONFIG_DIR"
     log_info "  - $ETCD_LOG_DIR"
 }
 
 download_and_install_etcd() {
-    log_step "Downloading and installing etcd"
+    log_step "Downloading and Installing etcd"
     
     # Check if already installed
     if [[ -f /usr/local/bin/etcd ]]; then
@@ -232,8 +232,8 @@ download_and_install_etcd() {
             log_warn "etcd $ETCD_VERSION already installed"
             return 0
         else
-            log_info "Installed version: $installed_version"
-            log_info "Updating to: $ETCD_VERSION"
+            log_info "Installed Version: $installed_version"
+            log_info "Updating: $ETCD_VERSION"
         fi
     fi
     
@@ -242,7 +242,7 @@ download_and_install_etcd() {
     local download_url="https://github.com/etcd-io/etcd/releases/download/v${ETCD_VERSION}/etcd-v${ETCD_VERSION}-linux-${ETCD_ARCH}.tar.gz"
     local tarball="etcd-v${ETCD_VERSION}-linux-${ETCD_ARCH}.tar.gz"
     
-    log_info "Baixando de / Downloading from: $download_url"
+    log_info "Downloading from: $download_url"
     
     if [[ -f "$tarball" ]]; then
         rm -f "$tarball"
@@ -255,11 +255,11 @@ download_and_install_etcd() {
     }
     
     # Extract
-    log_info "Extraindo arquivos / Extracting files..."
+    log_info "Extracting files..."
     tar -xzf "$tarball"
     
     # Install binaries
-    log_info "Instalando binários / Installing binaries..."
+    log_info "Installing binaries..."
     cp "etcd-v${ETCD_VERSION}-linux-${ETCD_ARCH}/etcd" /usr/local/bin/
     cp "etcd-v${ETCD_VERSION}-linux-${ETCD_ARCH}/etcdctl" /usr/local/bin/
     cp "etcd-v${ETCD_VERSION}-linux-${ETCD_ARCH}/etcdutl" /usr/local/bin/
@@ -502,7 +502,7 @@ main() {
     # Final info
     show_post_install_info
     
-    log_info "Script Completed Successfully!"
+    log_info "Script Completed Successfully"
 }
 
 # Execute main function
