@@ -26,7 +26,7 @@ ETCD_USER="etcd"
 ETCD_DATA_DIR="/var/lib/etcd"
 ETCD_CONFIG_DIR="/etc/etcd"
 ETCD_LOG_DIR="/var/log/etcd"
-CLUSTER_TOKEN="pgha-etcd-cluster"
+CLUSTER_TOKEN="pg-etcd-cluster"
 
 # Architecture detection (will be set automatically)
 ETCD_ARCH=""
@@ -36,15 +36,15 @@ ETCD_ARCH=""
 #============================================================
 # PG Node 01
 NODE1_NAME="lx-pgnode-01"
-NODE1_IP="10.0.0.4"
+NODE1_IP="10.1.0.4"
 
 # PG Node 02
 NODE2_NAME="lx-pgnode-02"
-NODE2_IP="10.0.0.5"
+NODE2_IP="10.1.0.5"
 
 # PG Node 03
 NODE3_NAME="lx-pgnode-03"
-NODE3_IP="10.0.0.6"
+NODE3_IP="10.1.0.6"
 
 #============================================================
 # HELPER FUNCTIONS
@@ -395,9 +395,9 @@ show_post_install_info() {
         echo "========================================================================="
         echo "4) Add NODE 2 and NODE 3 as members (run on NODE 1):"
         echo ""
-        echo "========================================================================="
+        echo "  ======================================================================="
         echo "   etcdctl member add ${NODE2_NAME} --peer-urls=http://${NODE2_IP}:2380"
-        echo "========================================================================="
+        echo "  ======================================================================="
         echo ""
         echo "   Expected Output:"
         echo "   ========================================================================="        
@@ -406,9 +406,9 @@ show_post_install_info() {
         echo "   │ ETCD_INITIAL_CLUSTER_STATE=\"existing\""
         echo "   ========================================================================="
         echo ""
-        echo "========================================================================="
+        echo "  ======================================================================="
         echo "   etcdctl member add ${NODE3_NAME} --peer-urls=http://${NODE3_IP}:2380"
-        echo "========================================================================="
+        echo "  ======================================================================="
         echo ""
         echo "   Expected Output:"
         echo "   ========================================================================="        
