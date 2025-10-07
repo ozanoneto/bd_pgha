@@ -716,11 +716,11 @@ show_completion_info() {
     if [[ "$SETUP_MODE" == "both" ]]; then
         log_info "Connection Examples:"
         echo ""
-        echo "  ${GREEN}# Write operations (PRIMARY)${NC}"
+        echo "  Write operations (PRIMARY)"
         echo "  psql -h $LB_IP_WRITE -p $POSTGRES_PORT -U postgres -d mydb"
         echo "  psql -h $LB_IP_WRITE -p $POSTGRES_PORT -U postgres -c \"INSERT INTO ...\""
         echo ""
-        echo "  ${GREEN}# Read operations (REPLICAs - load balanced)${NC}"
+        echo "  Read operations (REPLICAs - load balanced)"
         echo "  psql -h $LB_IP_READ -p $POSTGRES_PORT -U postgres -d mydb -c \"SELECT ...\""
         echo ""
     elif [[ "$SETUP_MODE" == "write-only" ]]; then
@@ -734,21 +734,16 @@ show_completion_info() {
     fi
     
     log_info "Test Health Probes:"
-    echo "  ${GREEN}# Test PRIMARY endpoint (should return 200 only on PRIMARY)${NC}"
+    echo "  Test PRIMARY endpoint (should return 200 only on PRIMARY)"
     echo "  curl -s -o /dev/null -w \"%{http_code}\" http://10.0.0.4:$PATRONI_API_PORT/primary"
     echo "  curl -s -o /dev/null -w \"%{http_code}\" http://10.0.0.5:$PATRONI_API_PORT/primary"
     echo "  curl -s -o /dev/null -w \"%{http_code}\" http://10.0.0.6:$PATRONI_API_PORT/primary"
     echo ""
-    echo "  ${GREEN}# Test REPLICA endpoint (should return 200 only on REPLICAs)${NC}"
+    echo "  Test REPLICA endpoint (should return 200 only on REPLICAs)"
     echo "  curl -s -o /dev/null -w \"%{http_code}\" http://10.0.0.4:$PATRONI_API_PORT/replica"
     echo "  curl -s -o /dev/null -w \"%{http_code}\" http://10.0.0.5:$PATRONI_API_PORT/replica"
     echo "  curl -s -o /dev/null -w \"%{http_code}\" http://10.0.0.6:$PATRONI_API_PORT/replica"
-    echo ""
-    
-    log_info "Verify Cluster Status:"
-    echo "  ${GREEN}patroni-status${NC}"
-    echo "  ${GREEN}patronictl -c /etc/patroni/patroni.yml list${NC}"
-    echo ""
+    echo ""   
     
     log_info "Test Load Distribution (READ Load Balancer):"
     echo "  ${GREEN}# Run multiple times to see different replica IPs${NC}"
@@ -769,35 +764,8 @@ show_completion_info() {
         echo "  az network lb show -g $RESOURCE_GROUP -n $LB_NAME_READ -o table"
         echo "  az network lb probe show -g $RESOURCE_GROUP --lb-name $LB_NAME_READ -n $LB_PROBE_NAME_REPLICA -o table"
         echo ""
-    fi
-    
-    log_warn "Application Configuration:"
-    echo ""
-    echo "  Configure your application to use DIFFERENT connection strings:"
-    echo ""
-    echo "  ${YELLOW}# For write operations${NC}"
-    echo "  WRITE_DB_HOST=$LB_IP_WRITE"
-    echo "  WRITE_DB_PORT=$POSTGRES_PORT"
-    echo ""
-    echo "  ${YELLOW}# For read operations${NC}"
-    echo "  READ_DB_HOST=$LB_IP_READ"
-    echo "  READ_DB_PORT=$POSTGRES_PORT"
-    echo ""
-    echo "  ${CYAN}Example application code:${NC}"
-    echo "  # Python with psycopg2"
-    echo "  write_conn = psycopg2.connect(host='$LB_IP_WRITE', port=$POSTGRES_PORT, ...)"
-    echo "  read_conn = psycopg2.connect(host='$LB_IP_READ', port=$POSTGRES_PORT, ...)"
-    echo ""
-    
-    log_warn "Best Practices:"
-    echo "  1. ${CYAN}Use WRITE LB for:${NC} INSERT, UPDATE, DELETE, DDL statements"
-    echo "  2. ${CYAN}Use READ LB for:${NC} SELECT queries, reports, analytics"
-    echo "  3. ${CYAN}Monitor replication lag:${NC} Ensure replicas are in sync"
-    echo "  4. ${CYAN}Test failover:${NC} Verify automatic failover works correctly"
-    echo "  5. ${CYAN}Connection pooling:${NC} Use pgBouncer or application-level pooling"
-    echo ""
-    
-    log_success "Azure Load Balancer setup completed successfully!"
+    fi   
+ 
 }
 
 #=======================================
