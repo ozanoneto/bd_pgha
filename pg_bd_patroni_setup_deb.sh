@@ -29,8 +29,8 @@ POSTGRES_PORT="5432"
 PATRONI_API_PORT="8008"
 
 # Default cluster configuration
-CLUSTER_NAME="pgha-etcd-cluster"
-SCOPE="pgha-etcd-cluster"
+CLUSTER_NAME="pg-etcd-cluster"
+SCOPE="pg-etcd-cluster"
 
 #============================================================
 # HELPER FUNCTIONS
@@ -172,7 +172,7 @@ install_dependencies() {
             export DEBIAN_FRONTEND=noninteractive
             # Update package lists and install basic requirements first
             apt-get update -qq
-            apt-get install -y apt-transport-https ca-certificates curl gnupg lsb-release
+            apt-get install -y apt-transport-https ca-certificates
             
             # Install Python and development tools
             apt-get install -y \
@@ -185,10 +185,8 @@ install_dependencies() {
                 build-essential \
                 libpq-dev \
                 openssl \
-                wget
-            
-            # Install PostgreSQL client separately
-            apt-get install -y postgresql-client-$POSTGRES_VERSION
+                wget \
+                curl       
             
             log_success "Dependencies installed successfully"
             ;;
@@ -206,38 +204,37 @@ install_postgresql() {
     case $OS in
         ubuntu|debian)           
             apt-get update -qq
-            apt-get install -y postgresql-$POSTGRES_VERSION
+            apt-get install -y postgresql-$POSTGRES_VERSION postgresql-client-$POSTGRES_VERSION
             
-            # Stop default PostgreSQL service
-            log_info "Stopping default PostgreSQL Service"
-            systemctl stop postgresql 2>/dev/null || true
-            systemctl disable postgresql 2>/dev/null || true
+            # Stop default PostgreSQL Service
+            log_info "Stopping PostgreSQL Service"
+            systemctl stop postgresql@$POSTGRES_VERSION-main.service 2>/dev/null || true
+            systemctl disable postgresql@$POSTGRES_VERSION-main.service 2>/dev/null || true
             
-            log_success "PostgreSQL $POSTGRES_VERSION installed"
+            log_success "PostgreSQL $POSTGRES_VERSION Installed and Services Stopped"
             ;;
         *)
-            log_error "Unsupported operating system: $OS"
+            log_error "Unsupported OS: $OS"
             exit 1
             ;;
     esac
 }
 
-# Function to create users and directories
+# Function to create directories
 setup_users_directories() {
     log_step "Setting up Users and Directories"
     
     # Create directories
     log_info "Creating directory structure..."
-    mkdir -p "$PATRONI_CONFIG_DIR" "$PATRONI_LOG_DIR" /var/lib/patroni
+    mkdir -p "$PATRONI_CONFIG_DIR" "$PATRONI_LOG_DIR" 
     
     # Set permissions
-    chown "$PATRONI_USER:$PATRONI_USER" "$PATRONI_LOG_DIR" /var/lib/patroni
-    chown root:root "$PATRONI_CONFIG_DIR"   
+    chown "$PATRONI_USER:$PATRONI_USER" "$PATRONI_LOG_DIR"
+    chown "$PATRONI_USER:$PATRONI_USER" "$PATRONI_CONFIG_DIR"   
     
     log_info "Directories created:"
     log_info "  - $PATRONI_CONFIG_DIR"
-    log_info "  - $PATRONI_LOG_DIR"
-    log_info "  - /var/lib/patroni"
+    log_info "  - $PATRONI_LOG_DIR"    
     
     # Allow user to run systemctl commands for PostgreSQL
     log_info "Configuring sudo permissions for postgres user..."
@@ -254,7 +251,7 @@ install_patroni() {
     log_step "Installing Patroni $PATRONI_VERSION"
     
     log_info "Installing Patroni and dependencies from APT..."
-    apt install -y python3 python3-dev python3-psycopg2 psutils patroni check-patroni
+    apt install -y patroni check-patroni
     
     # Verify installation
     if command -v patroni >/dev/null 2>&1; then
@@ -290,218 +287,24 @@ generate_patroni_config() {
     
     log_info "etcd endpoints: $etcd_url_list"
     
-    cat > "$PATRONI_CONFIG_DIR/patroni.yml" << EOF
+    cat > "$PATRONI_CONFIG_DIR/tmp_patroni.output" << EOF
 scope: $SCOPE
 namespace: /pgservice/
 name: $node_name
 
-log:
-  level: WARNING
-  traceback_level: ERROR
-  format: '%(asctime)s %(levelname)s: %(message)s'
-  dateformat: ''
-  max_queue_size: 1000
-  dir: /var/log/patroni
-  file_num: 4
-  file_size: 25000000
-  loggers:
-    patroni.postmaster: WARNING
-    urllib3: WARNING
-
 restapi:
   listen: $node_ip: $PATRONI_API_PORT
   connect_address: $node_ip:$PATRONI_API_PORT
-  authentication:
-      username: patroni
-      password: 8UITnqgAUiabInQqVobiRr7acy7
-  request_queue_size: 5
 
 etcd3:
   hosts: $etcd_url_list
-
-bootstrap:
-  dcs:
-    ttl: 30
-    loop_wait: 10
-    retry_timeout: 10
-    maximum_lag_on_failover: 1048576
-    master_start_timeout: 300
-    synchronous_mode: false
-    synchronous_mode_strict: false 
-    postgresql:
-      use_pg_rewind: true
-      use_slots: true
-      parameters:
-        max_connections: 250
-        superuser_reserved_connections: 5
-        password_encryption: scram-sha-256
-        max_locks_per_transaction: 64
-        max_prepared_transactions: 0        
-        shared_buffers: 1GB
-        work_mem: 16MB
-        maintenance_work_mem: 512MB
-        effective_cache_size: 3GB
-        checkpoint_timeout: 15min
-        checkpoint_completion_target: 0.8
-        min_wal_size: 2GB
-        max_wal_size: 8GB
-        wal_buffers: 32MB
-        default_statistics_target: 1000
-        seq_page_cost: 1
-        random_page_cost: 4
-        effective_io_concurrency: 2
-        synchronous_commit: on
-        autovacuum: on
-        autovacuum_max_workers: 5
-        autovacuum_vacuum_scale_factor: 0.01
-        autovacuum_analyze_scale_factor: 0.01
-        autovacuum_vacuum_cost_limit: 500
-        autovacuum_vacuum_cost_delay: 2
-        autovacuum_naptime: 1s
-        max_files_per_process: 4096
-        archive_mode: on
-        archive_timeout: 1800s        
-        wal_level: replica
-        wal_keep_size: 2GB
-        max_wal_senders: 10
-        max_replication_slots: 10
-        hot_standby: on
-        wal_log_hints: on        
-        shared_preload_libraries: pg_stat_statements
-        pg_stat_statements.max: 10000
-        pg_stat_statements.track: all
-        pg_stat_statements.track_utility: false
-        pg_stat_statements.save: true        
-        track_io_timing: on
-        log_lock_waits: on
-        log_temp_files: 0
-        track_activities: on
-        track_counts: on
-        track_functions: all
-        log_checkpoints: on
-        logging_collector: on
-        log_truncate_on_rotation: on
-        log_rotation_age: 1d
-        log_rotation_size: 0
-        log_line_prefix: '%t [%p-%l] %r %q%u@%d '
-        log_filename: postgresql-%Y-%m-%d_%H%M%S.log
-        log_directory: $POSTGRES_DATA_DIR/$POSTGRES_VERSION/main/log
-        hot_standby_feedback: off
-        max_standby_streaming_delay: 30s
-        wal_receiver_status_interval: 10s
-        idle_in_transaction_session_timeout: 10min
-        jit: off
-        max_worker_processes: 4
-        max_parallel_workers: 4
-        max_parallel_workers_per_gather: 2
-        max_parallel_maintenance_workers: 2
-
-  initdb:
-    - encoding: UTF8
-    - locale: en_US.UTF-8
-    - data-checksums      
-
-  pg_hba:
-  - host replication replicator 127.0.0.1/32 scram-sha-256
-  - host replication replicator $node_ip/0 scram-sha-256
-  - host all all 0.0.0.0/0 scram-sha-256  
-
-postgresql:
-  listen: $node_ip:$POSTGRES_PORT
-  connect_address: $node_ip:$POSTGRES_PORT
-  use_unix_socket: true
-  data_dir: $POSTGRES_DATA_DIR/$POSTGRES_VERSION/main
-  config_dir: /etc/postgresql/$POSTGRES_VERSION/main
-  bin_dir: /usr/lib/postgresql/$POSTGRES_VERSION/bin
-  pgpass: /var/lib/postgresql/.pgpass
-  authentication:
-    replication:
-      username: usr_replicator
-      password: $replicator_password
-    superuser:
-      username: postgres
-      password: $superuser_password
-    rewind:
-      username: rewind_user
-      password: $(generate_password)
-
-  parameters:
-    unix_socket_directories: '/var/run/postgresql'
-
-  remove_data_directory_on_rewind_failure: false
-  remove_data_directory_on_diverged_timelines: false
-
-  create_replica_methods:
-   - basebackup
-  
-  basebackup:
-   max-rate: '250M'
-   checkpoint: 'fast'
-
-watchdog:
-  mode: required
-  device: /dev/watchdog
-  safety_margin: 5
-  
-tags:
-  nofailover: false
-  noloadbalance: false
-  clonefrom: false
-  nosync: false
 EOF
     
     # Set permissions
-    chown "$PATRONI_USER:$PATRONI_USER" "$PATRONI_CONFIG_DIR/patroni.yml"
-    chmod 600 "$PATRONI_CONFIG_DIR/patroni.yml"
+    chown "$PATRONI_USER:$PATRONI_USER" "$PATRONI_CONFIG_DIR/tmp_patroni.output"
+    chmod 600 "$PATRONI_CONFIG_DIR/tmp_patroni.output"
     
-    log_success "Configuration file created: $PATRONI_CONFIG_DIR/patroni.yml"
-}
-
-# Function to setup PostgreSQL directories
-setup_postgresql_directories() {
-    local node_ip="$1"
-    
-    log_step "Setting up PostgreSQL Directories"
-    
-    # Create PostgreSQL data directory structure
-    log_info "Creating PostgreSQL data directory..."
-    mkdir -p "$POSTGRES_DATA_DIR/$POSTGRES_VERSION"
-    chown -R postgres:postgres "$POSTGRES_DATA_DIR"
-    
-    # Create socket directory
-    log_info "Creating socket directory..."
-    mkdir -p /var/run/postgresql
-    chown postgres:postgres /var/run/postgresql
-    
-    # Create log directory
-    log_info "Creating log directory..."
-    mkdir -p $POSTGRES_DATA_DIR/$POSTGRES_VERSION/main/log
-    chown -R postgres:postgres $POSTGRES_DATA_DIR/$POSTGRES_VERSION/main/log
-    
-    log_success "PostgreSQL directories configured"
-}
-
-# Function to configure firewall (if applicable)
-configure_firewall() {
-    local node_ip="$1"
-    
-    log_step "Configuring Firewall Rules"
-    
-    # Check if firewall is active
-    if command -v ufw >/dev/null 2>&1 && ufw status | grep -q "Status: active"; then
-        log_info "Configuring UFW firewall..."
-        ufw allow $POSTGRES_PORT/tcp
-        ufw allow $PATRONI_API_PORT/tcp
-        log_success "UFW firewall rules added"
-    elif command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
-        log_info "Configuring firewalld..."
-        firewall-cmd --permanent --add-port=$POSTGRES_PORT/tcp
-        firewall-cmd --permanent --add-port=$PATRONI_API_PORT/tcp
-        firewall-cmd --reload
-        log_success "Firewalld rules added"
-    else
-        log_warn "No active firewall detected - skipping firewall configuration"
-    fi
+    log_success "Configuration file created: $PATRONI_CONFIG_DIR/tmp_patroni.output"
 }
 
 # Function to start Patroni
@@ -558,42 +361,6 @@ verify_cluster() {
         log_warn "PostgreSQL connection test failed - this may be normal during initial cluster setup"
         log_warn "Wait a few moments and try: psql -h $node_ip -p $POSTGRES_PORT -U postgres"
     fi
-}
-
-# Function to create helper scripts
-create_helper_scripts() {
-    log_step "Creating Helper Scripts"
-    
-    log_info "Creating management scripts..."
-    
-    # Create patroni management script
-    cat > /usr/local/bin/patroni-status << 'EOF'
-#!/bin/bash
-patronictl -c /etc/patroni/patroni.yml list
-EOF
-    
-    cat > /usr/local/bin/patroni-switchover << 'EOF'
-#!/bin/bash
-patronictl -c /etc/patroni/patroni.yml switchover
-EOF
-    
-    cat > /usr/local/bin/patroni-failover << 'EOF'
-#!/bin/bash
-patronictl -c /etc/patroni/patroni.yml failover
-EOF
-    
-    cat > /usr/local/bin/patroni-reinit << 'EOF'
-#!/bin/bash
-patronictl -c /etc/patroni/patroni.yml reinit
-EOF
-    
-    chmod +x /usr/local/bin/patroni-*
-    
-    log_success "Helper scripts created:"
-    log_info "  - patroni-status      : Show cluster status"
-    log_info "  - patroni-switchover  : Perform controlled switchover"
-    log_info "  - patroni-failover    : Perform failover"
-    log_info "  - patroni-reinit      : Reinitialize a replica"
 }
 
 # Show Messages
@@ -754,11 +521,8 @@ main() {
     install_dependencies
     install_postgresql
     setup_users_directories
-    install_patroni
-    setup_postgresql_directories "$node_ip"
-    generate_patroni_config "$node_name" "$node_ip" "$etcd_hosts" "$superuser_password" "$replicator_password"   
-    configure_firewall "$node_ip"
-    create_helper_scripts   
+    install_patroni    
+    generate_patroni_config "$node_name" "$node_ip" "$etcd_hosts" "$superuser_password" "$replicator_password"       
     
     # Final info
     show_completion_info
