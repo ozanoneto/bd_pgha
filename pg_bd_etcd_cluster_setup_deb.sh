@@ -19,7 +19,7 @@ set -e
 #============================================================
 
 # etcd version
-ETCD_VERSION="3.6.5"
+ETCD_VERSION="3.6.7"
 
 # System User and Directories
 ETCD_USER="etcd"
@@ -36,15 +36,15 @@ ETCD_ARCH=""
 #============================================================
 # PG Node 01
 NODE1_NAME="lx-pgnode-01"
-NODE1_IP="10.1.0.4"
+NODE1_IP="192.168.1.21"
 
 # PG Node 02
 NODE2_NAME="lx-pgnode-02"
-NODE2_IP="10.1.0.5"
+NODE2_IP="192.168.1.22"
 
 # PG Node 03
 NODE3_NAME="lx-pgnode-03"
-NODE3_IP="10.1.0.6"
+NODE3_IP="192.168.1.23"
 
 #============================================================
 # HELPER FUNCTIONS
