@@ -386,7 +386,7 @@ show_post_install_info() {
         echo "1) Configure NODE 2 and NODE 3 by running this script on each node"
         echo ""
         echo "2) Start etcd on NODE 1 FIRST:"
-        echo "   sudo systemctl start etcd.service$"
+        echo "   sudo systemctl start etcd.service"
         echo "   sudo systemctl status etcd.service"
         echo ""
         echo "3) Verify NODE 1 is running and check cluster status:"
